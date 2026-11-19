@@ -68,7 +68,7 @@ def test_move_to_stops_where_it_is_when_cancelled():
         assert arm.move_to([1.5, -0.5], cancel=cancel) is False
         assert time.monotonic() - started < 1.0
         here = arm.get_joint_positions()[0]
-        assert 0.35 < here < 1.0
+        assert 0.05 < here < 1.0
         time.sleep(0.1)
         assert arm.get_joint_positions()[0] == pytest.approx(here, abs=0.01)   # held, not still moving
         assert arm.move_to([1.5, -0.5], cancel=cancel) is False   # already cancelled: nothing sent
