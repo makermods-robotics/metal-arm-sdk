@@ -37,6 +37,7 @@ def v4l(tmp_path, monkeypatch):
     return SimpleNamespace(sysfs=sysfs, by_path=by_path, dev=dev)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="a Linux /dev tree of symlinks")
 def test_linux_lists_capture_nodes_with_stable_ids(v4l):
     found = cameras.list_cameras()
     assert [(c.id, c.index, c.name) for c in found] == [
@@ -47,6 +48,7 @@ def test_linux_lists_capture_nodes_with_stable_ids(v4l):
     assert found[0].path == "/dev/video0"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="a Linux /dev tree of symlinks")
 def test_resolve_turns_ids_into_what_opencv_opens(v4l):
     assert cameras.resolve("index:4") == 4 and cameras.resolve(2) == 2
     assert cameras.resolve("usb:platform-3610000.usb-usb-0:2.2.1:1.0") == os.path.realpath(v4l.dev / "video2")

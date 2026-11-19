@@ -50,5 +50,6 @@ def test_json_failure_document_and_exit_code(monkeypatch, tmp_path, capsys):
 
 def test_clean_makes_json_safe():
     clean = sdk.cli.common.clean
-    assert clean({"a": float("nan"), "b": (1.0, float("inf")), 3: [sdk.rig.Path("/x")]}) == \
-        {"a": None, "b": [1.0, None], "3": ["/x"]}
+    path = sdk.rig.Path("/x")
+    assert clean({"a": float("nan"), "b": (1.0, float("inf")), 3: [path]}) == \
+        {"a": None, "b": [1.0, None], "3": [str(path)]}
