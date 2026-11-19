@@ -53,7 +53,7 @@ MAX_IN_FLIGHT = 10        # frames sent but not yet echoed (the Linux driver's G
 _FRAME = struct.Struct("<IIBBBB8s")   # 20 bytes, no hardware timestamp
 _BT_CONST = struct.Struct("<10I")
 
-INSTALL_HINT = ("Install pyusb and libusb (Linux: apt install libusb-1.0-0; macOS: brew install libusb). "
+INSTALL_HINT = ("Install pyusb and libusb (Linux: apt install libusb-1.0-0; macOS: brew install libusb; Windows: pip install libusb-package). "
                 "On Linux without root, allow the adapter with a udev rule such as "
                 'SUBSYSTEM=="usb", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="606f", MODE="0666".')
 
@@ -78,6 +78,12 @@ def _libusb_backend():
                 backend = libusb1.get_backend(find_library=lambda _, path=path: path)
                 if backend is not None:
                     break
+    if backend is None:
+        try:   # the libusb-package wheel bundles the library (installed with this package on Windows)
+            import libusb_package
+            backend = libusb_package.get_libusb1_backend()
+        except ImportError:
+            pass
     if backend is None:
         raise ConnectError(f"libusb not found. {INSTALL_HINT}")
     return backend

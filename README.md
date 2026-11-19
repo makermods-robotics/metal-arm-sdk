@@ -1,7 +1,7 @@
 # metal-arm
 
 Python SDK and command-line tool for the Metal Arm: six Damiao joints and a gripper, driven over
-CAN from Linux or macOS. The [`maker-arm`](https://github.com/makermods-robotics/maker-arm-sdk) SDK drives the Maker Arm with the same
+CAN from Linux, macOS or Windows. The [`maker-arm`](https://github.com/makermods-robotics/maker-arm-sdk) SDK drives the Maker Arm with the same
 API and the same commands.
 
 ## Install
@@ -16,9 +16,9 @@ Pick the CAN adapter you have:
 
 | Adapter | How to use it |
 |---|---|
-| candleLight / gs_usb (USB) | `--backend gs_usb`. Needs libusb (`apt install libusb-1.0-0` or `brew install libusb`) and, on Linux, the udev rule below. |
+| candleLight / gs_usb (USB) | `--backend gs_usb`. Needs libusb (`apt install libusb-1.0-0` or `brew install libusb`; bundled on Windows) and, on Linux, the udev rule below. |
 | SocketCAN (Linux) | `--backend socketcan --channel can0`, after `sudo ip link set can0 up type can bitrate 1000000`. |
-| Serial SLCAN | `--backend slcan --port /dev/ttyACM0`. Runs the arm at 25 Hz. |
+| Serial SLCAN | `--backend slcan --port /dev/ttyACM0` (`COM3` on Windows). Runs the arm at 25 Hz. |
 
 ```bash
 # Linux, once: let non-root users open gs_usb adapters
@@ -191,7 +191,8 @@ with Rig.load().camera("top") as cam:
     frame, stamp = cam.read()                   # BGR image, time in seconds
 ```
 
-Camera ids (`usb:<path>`) stay the same while a camera stays in the same USB port.
+Camera ids (`usb:<path>`) stay the same while a camera stays in the same USB port. On Windows cameras
+are not listed; name one by its index, `index:0`.
 
 More runnable code is in [`examples/`](examples).
 

@@ -64,8 +64,8 @@ def body(a, out) -> dict:
     say = out.say
     system = platform.system()
     say(f"platform: {system} {platform.release()}")
-    if system not in {"Linux", "Darwin"}:
-        say(f"unsupported platform: {CLI_NAME} releases support Linux and macOS only")
+    if system not in {"Linux", "Darwin", "Windows"}:
+        say(f"unsupported platform: {CLI_NAME} supports Linux, macOS and Windows")
 
     config = ArmConfig.from_yaml(a.config)
     JointMapper.from_json(a.map_path)

@@ -62,14 +62,18 @@ def default_path() -> Path:
 
 
 def default_backend() -> str:
-    """SocketCAN on Linux; serial SLCAN elsewhere (macOS has no SocketCAN)."""
+    """SocketCAN on Linux; serial SLCAN elsewhere (macOS and Windows have no SocketCAN)."""
     return "socketcan" if platform.system() == "Linux" else "slcan"
 
 
 def slcan_candidates() -> list[str]:
     """Serial devices that may be a USB-SLCAN adapter (or a Star leader)."""
-    if platform.system() == "Darwin":
+    system = platform.system()
+    if system == "Darwin":
         return sorted(glob.glob("/dev/cu.usbmodem*"))
+    if system == "Windows":
+        from serial.tools import list_ports
+        return sorted(p.device for p in list_ports.comports())
     return sorted(glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*"))
 
 
