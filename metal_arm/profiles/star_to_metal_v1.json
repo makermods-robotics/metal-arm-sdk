@@ -1,0 +1,12 @@
+{
+  "_comment": "Star Arm 102 leader -> Metal Arm v1. direction = sign x scale (elbow maps the leader's ~270 deg onto the follower's 180 deg; gripper widens the leader's ~61 deg of grip onto the jaw range); range_deg = the follower limits, except the gripper stops at 115 deg (the vendor stroke table documents opening to 116.4 deg only). Source: LeRobot RebotArm102LeaderMetalConfig.",
+  "joints": [
+    {"name": "shoulder_pan",  "servo": 0, "direction": -1.0,   "range_deg": [-160, 160]},
+    {"name": "shoulder_lift", "servo": 1, "direction": -1.0,   "range_deg": [-180, 0]},
+    {"name": "elbow_flex",    "servo": 2, "direction": -0.667, "range_deg": [0, 180]},
+    {"name": "wrist_flex",    "servo": 3, "direction": -1.0,   "range_deg": [-123, 81]},
+    {"name": "wrist_yaw",     "servo": 4, "direction": 1.0,    "range_deg": [-85, 85]},
+    {"name": "wrist_roll",    "servo": 5, "direction": -1.0,   "range_deg": [-145, 145]},
+    {"name": "gripper",       "servo": 6, "direction": 1.895,  "range_deg": [0, 115]}
+  ]
+}

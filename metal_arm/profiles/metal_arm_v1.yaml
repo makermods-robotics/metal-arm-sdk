@@ -1,0 +1,64 @@
+# Metal Arm v1 follower: 7 Damiao motors, MIT mode, classic CAN 1 Mbit/s, standard ids.
+# Zero pose (set with `metal-arm zero`): folded at rest, as the arm sits unpowered, gripper closed.
+# Send ids 1..7, reply (master) ids 0x11..0x17. Models (MIT scaling PMAX/VMAX/TMAX):
+#   jlo = 6.28 rad, 10 rad/s, 30 N·m; j2 = 6.28, 10, 120; jhi = 6.28, 30, 20.
+# Ids, models, limits (the vendor's position_min/max) and gains, source: LeRobot MetalFollowerConfig.
+host_id: 16                  # 0x10: reply id = 0x10 + motor id
+required_motor_ids: [1, 2, 3, 4, 5, 6, 7]
+control_rate_hz: 100         # 7 MIT frames + 7 replies per tick fit in ~5 ms over slcan
+max_velocity_deg: 280        # command rate limit; a supply drop-out rebooted every motor at 321 deg/s
+limit_margin: 0.0
+feedback_timeout: 0.3        # feedback older than this stops the arm
+fault_poll_interval: 0.25    # every Damiao reply carries the status; no separate poll is sent
+# Model: the arm's URDF (package data), z-up, joint signs as the motors report them. Gravity
+# feed-forward with per-joint factors (gravity_factor) for mass the URDF misses and a cap per
+# joint. Leader-arm friction compensation (float mode): identified viscous terms, clamped
+# velocities and the gripper's Coulomb/breakaway torque. Factors and friction, source: the
+# Dream console's Metal model, validated on the real arm.
+# Tool point, source: Dream IK spec (0.135 m along link6 x, z = approach); verify on your arm.
+urdf: urdf/metal_with_gripper.urdf
+tcp_xyz: [0.135, 0.0, 0.0]
+tcp_rpy_deg: [90, 0, 90]
+friction_deadzone: 0.05
+# Trajectory IK (Arm.move_ee): rest pose and weights it leans toward, per-joint speed caps in rad/s
+# (each capped at max_velocity), source: Dream IK spec (METAL_ARM).
+ik:
+  rest_pose: [0.0, -1.2, 1.5, 0.0, 0.0, 0.0]
+  rest_weight: [0.15, 0.3, 0.3, 0.3, 0.3, 0.3]
+  max_speed: [4.5, 4.5, 4.5, 12.0, 12.0, 12.0]
+joints:
+  - {name: shoulder_pan,  motor_id: 1, reply_id: 0x11, model: jlo, limits_deg: [-160.0, 160.0], kp: 100, kd: 5.0,
+     gravity_limit_nm: 1.0,  gravity_factor: 1.2,  friction_viscous: 0.21}
+  - {name: shoulder_lift, motor_id: 2, reply_id: 0x12, model: j2,  limits_deg: [-180.0, 0.0],   kp: 100, kd: 5.0,
+     gravity_limit_nm: 25.0, gravity_factor: 1.15, friction_viscous: 0.998}
+  - {name: elbow_flex,    motor_id: 3, reply_id: 0x13, model: jlo, limits_deg: [0.0, 180.0],    kp: 100, kd: 5.0,
+     gravity_limit_nm: 10.0, gravity_factor: 1.1,  friction_viscous: 0.572, friction_velocity_clamp: 0.8}
+  - {name: wrist_flex,    motor_id: 4, reply_id: 0x14, model: jlo, limits_deg: [-123.0, 81.0],  kp: 50,  kd: 5.0,
+     gravity_limit_nm: 3.0,  gravity_factor: 1.15, friction_viscous: 0.294, friction_velocity_clamp: 1.2}
+  - {name: wrist_yaw,     motor_id: 5, reply_id: 0x15, model: jhi, limits_deg: [-85.0, 85.0],   kp: 20,  kd: 0.6,
+     gravity_limit_nm: 1.0,  gravity_factor: 1.0,  friction_viscous: 0.0045}
+  - {name: wrist_roll,    motor_id: 6, reply_id: 0x16, model: jhi, limits_deg: [-145.0, 145.0], kp: 20,  kd: 0.6,
+     gravity_limit_nm: 0.5,  gravity_factor: 1.0,  friction_viscous: 0.0105}
+  # Gripper: 0 = fully closed, opens toward increasing angle (closing_direction -1). Vendor limit
+  # 0..2.4 rad (137.5 deg); its stroke table documents opening to 116.4 deg only. Holding effort
+  # regulated to 0.5 N·m on contact; 500 ms motor watchdog (RAM only, never flashed); released on
+  # fault; excluded from the rest return. Stop at 95 °C, no enable unless below 90 °C (hottest of
+  # MOS and rotor). Joints 1-6 keep the watchdog off: they keep holding if the host is lost.
+  - name: gripper
+    motor_id: 7
+    reply_id: 0x17
+    model: jhi
+    limits_deg: [0.0, 137.5]
+    kp: 20
+    kd: 0.6
+    can_timeout_ms: 500
+    max_temperature_c: 95
+    enable_temperature_c: 90
+    return_to_rest: false
+    release_on_fault: true
+    hold_torque_nm: 0.5
+    closing_direction: -1
+    friction_viscous: 0.01
+    friction_velocity_clamp: 3.0
+    friction_coulomb: 0.03
+    friction_rest_nm: 0.06

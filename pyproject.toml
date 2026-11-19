@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "metal-arm"
+version = "0.1.0"
+description = "Linux and macOS SDK for the Metal Arm (6-DOF Damiao arm plus gripper)"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.10"
+dependencies = ["motorbridge-smart-servo", "numpy", "pyserial", "pyusb", "pyyaml"]
+classifiers = [
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+]
+
+[project.scripts]
+metal-arm = "metal_arm.cli.main:main"
+
+[project.optional-dependencies]
+cameras = ["opencv-python"]
+dev = ["pytest", "opencv-python"]
+
+[tool.setuptools.packages.find]
+include = ["metal_arm*"]
+
+[tool.setuptools.package-data]
+"metal_arm.profiles" = ["*.yaml", "*.json"]
+"metal_arm.urdf" = ["*.urdf"]
