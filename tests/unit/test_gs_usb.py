@@ -15,6 +15,12 @@ from metal_arm.motor import Motor, route  # noqa: E402
 from metal_arm.transport import gs_usb  # noqa: E402
 from metal_arm.transport.base import create_backend  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def linux(monkeypatch):
+    """The kernel-driver detach only happens on Linux; test that path on every platform."""
+    monkeypatch.setattr(gs_usb.sys, "platform", "linux")
+
 BT_CONST_48MHZ = struct.pack("<10I", 0x1F, 48_000_000, 1, 16, 1, 8, 4, 1, 1024, 1)
 FRAME = struct.Struct("<IIBBBB8s")
 
