@@ -58,6 +58,7 @@ joints:
     release_on_fault: true
     hold_torque_nm: 0.5
     closing_direction: -1
+    open_position_deg: 116.4   # fully open: the end of the stroke table, short of the 137.5 limit
     friction_viscous: 0.01
     friction_velocity_clamp: 3.0
     friction_coulomb: 0.03

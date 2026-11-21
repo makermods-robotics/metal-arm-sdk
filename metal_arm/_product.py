@@ -16,3 +16,9 @@ DEFAULT_STAR_MAPPING = PROFILE_DIR / "star_to_metal_v1.json"
 URDF: Optional[Path] = Path(__file__).resolve().parent / "urdf" / "metal_with_gripper.urdf"
 
 ZERO_POSE = "folded at rest, as the arm sits unpowered, gripper fully closed"
+
+# dream_ik embodiment of this arm (the JAX trajectory IK, trajectory_ik_jax.py) and its joints from this package's:
+# embodiment joint = joint * sign + offset (rad). Its URDF takes the joints as the arm reports them.
+DREAM_EMBODIMENT = "metal"
+DREAM_JOINT_SIGN = (1, 1, 1, 1, 1, 1)
+DREAM_JOINT_OFFSET = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)

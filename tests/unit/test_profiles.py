@@ -126,3 +126,9 @@ def test_leader_friction_model():
     assert [j.friction_coulomb for j in cfg.joints] == [0.0] * 6 + [0.03]
     assert [j.friction_rest_nm for j in cfg.joints] == [0.0] * 6 + [0.06]
     assert cfg.friction_deadzone == 0.05
+
+
+def test_gripper_fully_open_at_the_end_of_its_stroke():
+    gripper = ArmConfig.from_yaml(DEFAULT_PROFILE).joints[-1]
+    assert gripper.name == "gripper" and gripper.closing_direction == -1
+    assert math.degrees(gripper.open_position) == pytest.approx(116.4)   # short of the 137.5 limit

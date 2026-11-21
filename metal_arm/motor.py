@@ -211,6 +211,12 @@ class Motor:
         """Reason a fault was latched, or None."""
         return self._latched
 
+    @property
+    def watchdog_released(self) -> bool:
+        """Does the motor report only the state its watchdog leaves after commands stopped? Status
+        "communication lost": torque is off and the status must be cleared before an enable."""
+        return self._status is not None and self._status.code == protocol.STATUS_COMM_LOST
+
     def reset_cache(self) -> None:
         self._feedback = None
         self._fb_time = None
