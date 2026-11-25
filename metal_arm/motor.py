@@ -509,8 +509,11 @@ class Motor:
             pass
         return self._answers_at(new_id, (), timeout) is not None   # () = any reply id
 
-    def set_id(self, new_id: int, timeout: float = 0.5) -> None:
+    def set_id(self, new_id: int, timeout: float = 0.5, torque_off_confirmed: bool = False) -> None:
         """Change the send id to new_id and the master id to host_id + new_id, saved to flash.
+
+        Damiao motors report whether torque is on in every reply, so the fresh status read here decides;
+        ``torque_off_confirmed`` is only needed if a reply ever leaves that unknown.
 
         Procedure (Damiao register map, DM_CAN change_motor_param/save_motor_param): refuse if
         anything answers at new_id; require the motor disabled (flash save is ignored while
@@ -538,7 +541,10 @@ class Motor:
                                  "pick a free id or disconnect that motor")
             status = self.check(step)
             if status.enabled:
-                raise StateError(f"{self.joint.label}: disable the motor before changing its id")
+                raise StateError(f"{self.joint.label}: the motor reports torque on; disable it before changing its id")
+            if status.enabled is None and not torque_off_confirmed:
+                raise StateError(f"{self.joint.label}: the motor did not report whether torque is on. Make sure it "
+                                 "is de-energized, then confirm (torque_off_confirmed=True; the CLI asks)")
             reply = self._register(protocol.OP_WRITE, Reg.MST_ID, new_reply, "u32", step, 2,
                                     send_id=old_id, reply_ids=replies)
             if reply.value("u32") != new_reply:
