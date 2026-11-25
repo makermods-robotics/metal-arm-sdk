@@ -32,7 +32,7 @@
   that drops is reopened. Header lines (8 KiB), header count (64) and frames (8 MiB) are bounded; closing a
   `url:` camera never waits on a server that sends slowly. `cameras list` shows the rig's `url:` cameras;
   `snapshot`, `stream` and `Rig.camera()` take them like USB ones.
-- `set-id` refuses an id another joint has in the profile, even when that joint is offline.
+- `set-id` refuses to give a joint's motor the id of another joint in the profile, even when that joint is offline.
 - `gravity --check` gives the gravity model the chain's joints only, so it compares the measured holding torque
   with the model on an arm with a gripper.
 
