@@ -5,6 +5,8 @@
 - `enable()` refuses an arm another program holds on firmware that cannot report torque state (a motor reading more
   than 0.1 N*m counts as energized); Damiao motors report their state, so on the Metal arm the existing refusal of
   a motor with torque on applies as before. Shared with `maker-arm-sdk`.
+- Both refusals of `enable()` for an arm another program holds raise `HeldByAnotherProgram`, a `ConnectError`
+  exported from the package.
 - The control loop keeps its rate on small computers (shared with `maker-arm-sdk`, where a big.LITTLE board with a
   gs_usb adapter held about 147 Hz of 200 at rest and fell to 20 Hz while `move_ee` solved its path).
   - `move_ee` solves its path in a helper process (`_planner.py`), so the solve no longer holds the interpreter
