@@ -3,6 +3,7 @@ a fallback only when no helper can run, planning bounded by time and cancel, and
 imported by the helper."""
 
 import math
+import os
 import subprocess
 import sys
 import threading
@@ -15,6 +16,7 @@ from conftest import sdk
 from chain_fixture import repo_chain
 
 planner, trajectory_ik = sdk._planner, sdk.trajectory_ik
+real_helper_class = planner._Helper
 
 
 @pytest.fixture
@@ -105,7 +107,7 @@ def timed_plan(setup, **kw):
 def test_a_hanging_helper_is_stopped_after_the_callers_limit(setup, helper_code):
     helper_code(HANG)
     result, took = timed_plan(setup, limit=0.4)
-    assert result.q is None and "timed out after 0.4 s" in result.reason
+    assert result.q is None and "timed out after 0.4" in result.reason
     assert 0.35 < took < 1.5
     assert helper_code.pool._idle == [] and helper_code.pool.unavailable is None
 
@@ -142,13 +144,79 @@ def test_a_helper_that_dies_while_solving_fails_the_plan_without_solving_it_here
     assert helper_code.pool.unavailable is None   # the next call starts a new helper
 
 
-def test_a_helper_that_never_starts_is_replaced_by_solving_here(setup, monkeypatch):
-    pool = planner._Pool()
-    monkeypatch.setattr(planner, "_pool", pool)
-    real_helper = planner._Helper
-    monkeypatch.setattr(planner, "_Helper", lambda: real_helper(EXIT_AT_ONCE))
+def test_a_helper_that_dies_before_reporting_refuses_the_plan_and_the_next_plan_starts_a_fresh_one(
+        setup, helper_code, monkeypatch):
+    helper_code(EXIT_AT_ONCE)
+    result, took = timed_plan(setup, limit=30.0)
+    assert result.q is None and "planning helper failed" in result.reason and took < 10.0
+    assert helper_code.pool.unavailable is None and helper_code.pool._idle == []
+    monkeypatch.setattr(planner, "_Helper", real_helper_class)
     result, _ = timed_plan(setup, limit=30.0)
-    assert result.q is not None and pool.unavailable
+    assert result.q is not None
+
+
+def slow_chunks(monkeypatch, seconds=0.2):
+    feed = trajectory_ik.IKStream.feed
+
+    def slow(self, *a, **k):
+        time.sleep(seconds)
+        return feed(self, *a, **k)
+    monkeypatch.setattr(trajectory_ik.IKStream, "feed", slow)
+
+
+@pytest.mark.parametrize("stop", ["timeout", "cancel"])
+def test_planning_in_this_process_honours_timeout_and_cancel(setup, monkeypatch, stop):
+    monkeypatch.setattr(planner, "_pool", planner._Pool())
+    monkeypatch.setattr(planner.sys, "executable", "/nonexistent/python")   # no helper process can be created
+    slow_chunks(monkeypatch)
+    cancel = threading.Event()
+    if stop == "cancel":
+        threading.Timer(0.3, cancel.set).start()
+    chain, ik, q0, start = setup
+    t0 = time.monotonic()
+    result = planner.plan(chain, ik, (start + [0, 0, 0.03]).tolist(), None, q0, 200.0, 0.05,
+                          limit=0.3 if stop == "timeout" else None, cancel=cancel)
+    assert result.q is None and ("timed out" if stop == "timeout" else "cancelled") in result.reason
+    assert time.monotonic() - t0 < 2.0   # checked between chunks of 64 ticks: 0.3 s plus at most one chunk
+    assert planner._pool.unavailable
+
+
+def test_a_path_longer_than_the_tick_budget_is_refused_before_it_is_built(setup, monkeypatch):
+    chain, ik, q0, start = setup
+    monkeypatch.setattr(planner, "MAX_PATH_TICKS", 200)
+    monkeypatch.setattr(trajectory_ik, "straight_line", lambda *a: pytest.fail("the path was built"))
+    result = planner.plan_ee(chain, ik, (start + [0, 0, 0.03]).tolist(), None, q0, 200.0, 0.05)
+    assert result.q is None and "split the move" in result.reason
+
+
+def test_the_planning_ceiling_bounds_a_plan_across_retimings(setup, helper_code, monkeypatch):
+    helper_code(SLOW_SOLVE)
+    monkeypatch.setattr(planner, "PLAN_CEILING_S", 0.8)
+    monkeypatch.setattr(planner, "PLAN_S_PER_TICK", 10.0)   # the per-tick allowance alone would wait for minutes
+    result, took = timed_plan(setup)
+    assert result.q is None and "timed out" in result.reason and took < 2.0
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="no fork on this platform")
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_a_forked_child_starts_its_own_helpers_and_leaves_the_parents_alone(setup):
+    chain, ik, q0, start = setup
+    target = (start + [0, 0, 0.01]).tolist()
+    assert planner.plan(chain, ik, target, None, q0, 50.0, None).q is not None
+    parent_helpers = [h.proc.pid for h in planner._pool._idle]
+    assert parent_helpers
+    pid = os.fork()
+    if pid == 0:   # the child: an empty pool, and its own helper works
+        code = 1
+        try:
+            if not planner._pool._idle and planner.plan(chain, ik, target, None, q0, 50.0, None).q is not None:
+                code = 0
+        finally:
+            os._exit(code)
+    _, status = os.waitpid(pid, 0)
+    assert os.waitstatus_to_exitcode(status) == 0
+    assert [h.proc.pid for h in planner._pool._idle] == parent_helpers
+    assert planner.plan(chain, ik, target, None, q0, 50.0, None).q is not None
 
 
 def test_helper_never_imports_the_callers_main_module(tmp_path):
