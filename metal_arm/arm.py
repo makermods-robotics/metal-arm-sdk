@@ -18,7 +18,7 @@ import numpy as np
 from . import _planner, gravity, kinematics, realtime, trajectory_ik
 from ._product import CLI_NAME
 from .config import ArmConfig, JointConfig, check_gains
-from .errors import ArmError, ConnectError, FaultLatched, ParamTimeout, StateError
+from .errors import ArmError, ConnectError, FaultLatched, ParamTimeout, RouteUnverified, StateError
 from .gripper import GripperHold
 from .motor import ID_RANGE, Motor, route
 from .transport.base import CanBackend, create_backend
@@ -31,6 +31,15 @@ EE_MIN_SECONDS = _planner.EE_MIN_SECONDS
 # A late control tick advances the commands by the time that really passed, up to this many periods, so speed
 # limits hold in real time when the computer cannot keep the profile's rate.
 MAX_TICK_PERIODS = 4
+# Rest: near the supported rest pose the return presses the weight-carrying joints toward it by at most REST_PRESS
+# and at most REST_PRESS_NM of proportional effort (offset * kp). Before torque off, stop() stops the control loop and
+# checks one fresh reading per returned joint: answered within REST_FRESH_S and no further from rest than when the
+# return was verified (or than rest_arrived), give or take REST_RECHECK; otherwise the loop restarts and the arm holds.
+REST_PRESS = math.radians(3.0)
+REST_PRESS_NM = 1.75
+REST_FRESH_S = 0.05
+REST_RECHECK = math.radians(1.0)
+HEIGHT_JOINT_M_PER_RAD = 0.02        # a joint that moves the tool point up or down at least this much carries weight
 # Start-to-start spacing of the frames one tick sends: about one command and its reply on a 1 Mbit/s bus. A send
 # that itself takes longer (a slow USB round trip) needs no extra wait.
 FRAME_SPACING_S = 200e-6
@@ -97,6 +106,7 @@ class Arm:
         # Motion ownership: bumped by every new target, stop, estop, disable, fault, return to rest and new
         # session. A move_ee commits its rows only while the value it took is still current.
         self._motion = 0
+        self._unverified: dict[int, str] = {}   # joint index -> why its id no longer surely reaches its motor
         self._released: set[int] = set()      # disabled after a fault (release_on_fault)
         self._faulted: set[int] = set()       # frozen at the fault pose
         self._watchdog_restore: dict[int, object] = {}
@@ -385,6 +395,7 @@ class Arm:
                                        "clear_faults() before enabling")
             # Fresh fault status and position from every motor; cached values never authorize torque.
             self._check_motors()
+            self._refuse_unverified_routes()
             # A motor already holding (another session, `--then stay`) would lose its torque to the
             # neutral preload, and a failed enable releases every motor: refuse before any frame.
             holding = [f"{m.motor_id} ({j.label})" for m, j in zip(self.motors, self.config.joints)
@@ -398,7 +409,7 @@ class Arm:
             self._gravity = self._make_gravity()
             self._arm_watchdogs()
             self._start_targets(pos, speed)
-            self.rest_pose = list(pos)
+            self.rest_pose = self._rest_target(pos)
             try:
                 for i, m in enumerate(self.motors):
                     abort_if_cancelled()
@@ -459,6 +470,7 @@ class Arm:
                     raise ConnectError(f"motor {m.motor_id} has a latched fault ({m.fault_latched}); "
                                        "refusing to attach")
             self._check_motors()
+            self._refuse_unverified_routes()
             torque = [m.feedback.enabled for m in self.motors]
             if not any(t is not False for t in torque):
                 raise ConnectError("no motor reports torque on: nothing to attach to; use enable()")
@@ -713,23 +725,126 @@ class Arm:
     def stop(self) -> bool:
         """Return to the rest pose, then release torque only if the return was verified.
 
-        An arm without brakes must never be released away from rest. If the return cannot be verified the arm keeps holding its
-        current pose and False is returned; the caller decides when to disable().
+        An arm without brakes must never be released away from rest. After a verified return the control loop
+        stops and each returned joint is read once more; torque goes off only if every reading is fresh and no
+        joint moved away from rest since the return was verified. Otherwise, and on any other way out (an exception, a
+        second Ctrl-C), the arm keeps holding its measured pose at full gains with the control loop running and
+        False is returned; the caller decides when to disable().
         """
         with self._lifecycle:
             if self._state not in (ArmState.ENABLED, ArmState.FAULT):
                 return True
+            released = False
             try:
-                verified = self._return_to_rest()
+                include = self._returned_joints()
+                if include is None:
+                    return False
+                if not self._return_to_rest():
+                    return False
+                released = self._release_if_still(include, self.rest_pose)
+                return released
             except Exception:
                 log.exception("return to rest failed")
-                verified = False
-            if verified:
-                self.disable()
-                return True
-            self._returning = False
-            self.hold_current_position()
+                return False
+            finally:
+                self._returning = False
+                if not released and self._state in (ArmState.ENABLED, ArmState.FAULT):
+                    if not self._running:
+                        self._start_loop()
+                    self.hold_current_position()
+
+    def _returned_joints(self) -> Optional[list[int]]:
+        """The joints the return brings back, or None when stop() must not release: none would be brought back,
+        or a joint that carries the arm's weight is left out and stands away from the supported rest pose."""
+        cfg = self.config
+        include = [i for i, j in enumerate(cfg.joints) if j.return_to_rest and i not in self._released]
+        if not include:
+            log.error("no joint returns to rest; the arm keeps holding")
+            return None
+        supported = self._supported_rest()
+        pos = self.get_joint_positions()
+        for i in self._weight_joints(supported):
+            if i not in include and (not math.isfinite(pos[i]) or abs(pos[i] - supported[i]) > cfg.rest_settle):
+                log.error("%s carries the arm's weight, is away from rest and does not return; the arm keeps holding",
+                          cfg.joints[i].label)
+                return None
+        return include
+
+    def _release_if_still(self, include: list[int], rest: list[float]) -> bool:
+        """Stop the loop, read every motor once (the holding frame the loop would send) and release torque only if
+        each returned joint answered within REST_FRESH_S and is no further from ``rest`` than when the return was
+        verified (or than rest_arrived), give or take REST_RECHECK: still converging toward rest is fine, moving
+        away from it is not."""
+        verified = self.get_joint_positions()
+        self._end_motion()
+        self._stop_loop()
+        if self._loop_thread is not None:
+            log.error("the control loop did not stop; the arm keeps holding")
             return False
+        sequences = [m.feedback_sequence for m in self.motors]
+        self._tick(1.0 / self.config.control_rate_hz)
+        deadline = time.monotonic() + REST_FRESH_S
+        while time.monotonic() < deadline and not self._measured_since(include, sequences):
+            time.sleep(0.001)
+        now = self.get_joint_positions()
+        problem = (f"state {self._state.name}" if self._state is not ArmState.ENABLED else
+                   "no fresh reply" if not (self._measured_since(include, sequences) and
+                                            all(self.motors[i].feedback_age <= REST_FRESH_S for i in include)) else
+                   next((f"{self.config.joints[i].label} is {math.degrees(abs(now[i] - rest[i])):.1f} deg from rest, "
+                         f"{math.degrees(abs(verified[i] - rest[i])):.1f} when verified"
+                         for i in include if not (math.isfinite(now[i]) and abs(now[i] - rest[i]) <= max(
+                             abs(verified[i] - rest[i]), self.config.rest_arrived) + REST_RECHECK)), None))
+        if problem:
+            log.error("after the verified return to rest: %s; the arm keeps holding", problem)
+            return False
+        self._release_all()
+        self._released.clear()
+        self._faulted.clear()
+        self._state = ArmState.CONNECTED
+        return True
+
+    def _start_loop(self) -> None:
+        self._running = True
+        self._loop_thread = threading.Thread(target=self._control_loop, args=(self._session,), daemon=True,
+                                             name=f"{CLI_NAME}-ctrl")
+        self._loop_thread.start()
+
+    def _supported_rest(self) -> list[float]:
+        """The profile's rest_pose, else zero, clipped into the soft limits."""
+        cfg = self.config
+        base = cfg.rest_pose or [0.0] * cfg.n_joints
+        return [min(j.hi - cfg.limit_margin, max(j.lo + cfg.limit_margin, v)) for j, v in zip(cfg.joints, base)]
+
+    def _weight_joints(self, supported: list[float]) -> list[int]:
+        """The joints that move the tool point up or down at the supported rest pose (they carry the arm's weight);
+        none without a URDF."""
+        try:
+            chain = self.chain
+        except ArmError:
+            return []
+        lift = chain.jacobian(supported[:chain.n])[2]
+        return [i for i in range(chain.n) if abs(lift[i]) >= HEIGHT_JOINT_M_PER_RAD]
+
+    def _rest_target(self, pos: list[float]) -> list[float]:
+        """The pose stop() returns to for an arm enabled at ``pos``: ``pos`` itself, except near the supported rest
+        pose with ``rest_window`` set: there each joint that carries the arm's weight is pressed toward it by at
+        most REST_PRESS and at most REST_PRESS_NM of proportional effort, inside the soft limits, so a return that
+        stops a little short cannot leave the arm, session after session, further from its support."""
+        cfg = self.config
+        if cfg.rest_window is None:
+            return list(pos)
+        supported = self._supported_rest()
+        carrying = [i for i in self._weight_joints(supported) if cfg.joints[i].return_to_rest and cfg.joints[i].kp > 0]
+        if not carrying or any(not math.isfinite(pos[i]) or abs(pos[i] - supported[i]) > cfg.rest_window
+                               for i in carrying):
+            return list(pos)
+        target = list(pos)
+        for i in carrying:
+            j = cfg.joints[i]
+            press = min(REST_PRESS, REST_PRESS_NM / j.kp)
+            moved = pos[i] + max(-press, min(press, supported[i] - pos[i]))
+            target[i] = min(j.hi - cfg.limit_margin, max(j.lo + cfg.limit_margin, moved))
+        return target
 
     # ── operator actions while torque is off ──
     def set_zero(self, indices: Optional[Sequence[int]] = None) -> None:
@@ -747,12 +862,15 @@ class Arm:
                 self._wrap[i] = 0.0
                 time.sleep(0.01)
 
-    def set_motor_id(self, old: int, new: int, timeout: float = 0.5, torque_off_confirmed: bool = False) -> None:
+    def set_motor_id(self, old: int, new: int, timeout: float = 0.5, torque_off_confirmed: bool = False,
+                     replacing: Optional[str] = None) -> None:
         """Persistently change a motor's CAN ID from ``old`` to ``new`` while torque is off.
 
         Works connected or disconnected (the bus is opened for the call). Refuses if ``new``
-        already answers, or if ``old`` is a joint's motor and ``new`` belongs to another joint of the profile (even
-        one that is offline). The motor is
+        already answers, or if it belongs to a joint of the profile (even one that is offline) unless ``replacing``
+        names that joint and ``old`` is no joint's id: a motor replacing a joint, or one moved off its joint's id and
+        back. If afterwards both ids answer, the joints configured at ``old`` and ``new`` are marked unverified and enable()/attach()
+        refuse this Arm (scan the bus, fix the profile, build a new Arm). The motor is
         read before the write and refused if it reports torque on, holds torque or moves; where its firmware
         cannot report torque state, ``torque_off_confirmed`` says the caller made sure it is de-energized
         (Motor.set_id). A configured joint that had ``old`` is routed to ``new`` from then on
@@ -771,8 +889,10 @@ class Arm:
             # profile does not have (a replacement, or one moved off its joint's id) may take a joint's id when
             # nothing answers there.
             other = next((j for j in self.config.joints if j.motor_id == new), None)
-            if other is not None and any(j.motor_id == old for j in self.config.joints):
-                raise ArmError(f"motor ID {new} belongs to {other.label} in the profile; pick a free id")
+            if other is not None and (any(j.motor_id == old for j in self.config.joints) or replacing != other.name):
+                raise ArmError(f"motor ID {new} belongs to {other.label} in the profile; pick a free id, or, for a "
+                               f"motor that is not in the profile and replaces it, name the joint "
+                               f"(replacing={other.name!r}; set-id --replacing {other.name})")
             joint = next((j for j in self.config.joints if j.motor_id == old), None) or JointConfig(
                 motor_id=old, lo=-math.pi, hi=math.pi, kp=0.0, kd=0.0)
             target = Motor(joint, self._backend, self.config.host_id)
@@ -797,12 +917,25 @@ class Arm:
                     taken = False
                 if taken:
                     raise ArmError(f"motor ID {new} already answers on the bus")
-                target.set_id(new, timeout, torque_off_confirmed=torque_off_confirmed)
+                try:
+                    target.set_id(new, timeout, torque_off_confirmed=torque_off_confirmed)
+                except RouteUnverified as e:
+                    # Either id may now reach the wrong motor: the joints configured at both ends are unverified.
+                    for i, j in enumerate(self.config.joints):
+                        if j.motor_id in (old, new):
+                            self._unverified[i] = str(e)
+                    raise
                 self._rekey(old, new, target)
             finally:
                 if opened:
                     self._backend.close()
                 self._backend.set_recv_callback(self._on_frame)
+
+    def _refuse_unverified_routes(self) -> None:
+        if self._unverified:
+            names = ", ".join(self.config.joints[i].label for i in sorted(self._unverified))
+            raise ConnectError(f"{names}: id unverified after a set-id that left both ids answering; scan the bus, "
+                               "fix the profile, and use a new Arm")
 
     def _rekey(self, old: int, new: int, changed: Motor) -> None:
         """After an id change, route the joint that had ``old`` to its motor at ``new``."""
@@ -914,17 +1047,19 @@ class Arm:
         is (holding the measured pose) and returns False. ArmError without a URDF.
         """
         chain = self.chain
-        if self._state is not ArmState.ENABLED:
-            log.warning("move_ee rejected: state=%s", self._state.name)
-            return False
         target = [float(v) for v in xyz]
         if len(target) != 3 or (rpy is not None and len(rpy) != 3):
             raise ValueError("xyz (and rpy) need three values")
         if speed is not None and not (math.isfinite(speed) and speed > 0):
             raise ValueError("speed must be positive")
+        # Admission and ownership together, before any setup: a move_ee that pauses here cannot claim a session
+        # that an e-stop and a new enable started after it was called.
+        token = self._claim_motion()
+        if token is None:
+            log.warning("move_ee rejected: state=%s returning=%s", self._state.name, self._returning)
+            return False
         cfg = self.config
         ik = trajectory_ik.TrajectoryIK.from_config(cfg, chain=chain)
-        token = self._take_motion()
         stopped = _MotionStop(self, token, cancel)
         current = self.get_commanded_positions()
         q0 = np.asarray(current[:chain.n], dtype=float)
@@ -962,8 +1097,7 @@ class Arm:
         due = time.monotonic()
         for row in rows:
             if cancel is not None and cancel.is_set():
-                if self._motion == token:
-                    self.hold_current_position()
+                self._hold_if_owner(token)
                 return False
             if deadline is not None and time.monotonic() > deadline:
                 return False
@@ -1040,8 +1174,7 @@ class Arm:
             if self._state is not ArmState.ENABLED or not self._running:
                 return False
             if cancel is not None and cancel.is_set():
-                if self._motion == token:
-                    self.hold_current_position()
+                self._hold_if_owner(token)
                 return False
             with self._target_lock:
                 if self._motion != token or self._user_targets != q:
@@ -1060,10 +1193,17 @@ class Arm:
 
     def hold_current_position(self) -> bool:
         """Freeze the arm at its latest measured pose without releasing torque."""
+        return self._hold_if_owner(None)
+
+    def _hold_if_owner(self, token: Optional[int]) -> bool:
+        """hold_current_position(); with ``token``, only while that motion still owns the targets (checked under the
+        lock the hold commits with, so a newer command is never overwritten)."""
         if self._state not in (ArmState.ENABLED, ArmState.FAULT):
             return False
         positions = self.get_joint_positions()
         with self._target_lock:
+            if token is not None and token != self._motion:
+                return False
             self._motion += 1
             for i, p in enumerate(positions):
                 if math.isfinite(p):
@@ -1079,13 +1219,14 @@ class Arm:
         stalled (a loaded joint holds a standing error). Bounded by rest_timeout. Never raises.
         New targets are refused while it runs.
         """
-        try:
-            return self._return_to_rest(rest)
-        except Exception:
-            log.exception("return to rest failed")
-            return False
-        finally:
-            self._returning = False
+        with self._lifecycle:
+            try:
+                return self._return_to_rest(rest)
+            except Exception:
+                log.exception("return to rest failed")
+                return False
+            finally:
+                self._returning = False
 
     def _return_to_rest(self, rest: Optional[list[float]] = None) -> bool:
         cfg = self.config
@@ -1098,6 +1239,7 @@ class Arm:
         with self._target_lock:
             self._returning = True
             self._motion += 1
+            token = self._motion
             self._speed = None
             for i, p in enumerate(positions):
                 if math.isfinite(p):
@@ -1114,6 +1256,8 @@ class Arm:
         if not self._rest_feedback_ok(include, start):
             return False
         with self._target_lock:
+            if self._motion != token:
+                return False
             self._synced = [True] * cfg.n_joints
         worst = max(abs(start[i] - rest[i]) for i in include)
         if worst <= cfg.rest_arrived and self._measured_since(include, sequences) and self._recent(include):
@@ -1129,13 +1273,15 @@ class Arm:
             if time.monotonic() >= deadline or not self._rest_active():
                 break
             with self._target_lock:
+                if self._motion != token:
+                    return False   # an e-stop, disable or new session took over: never write into it
                 for i in include:
                     self._user_targets[i] = start[i] + (rest[i] - start[i]) * frac
             time.sleep(period)
             if not self._rest_feedback_ok(include, self.get_joint_positions()):
                 return False
         best, stalled = math.inf, 0
-        while time.monotonic() < deadline and self._rest_active():
+        while time.monotonic() < deadline and self._rest_active() and self._motion == token:
             pos = self.get_joint_positions()
             if not self._rest_feedback_ok(include, pos):
                 return False
@@ -1238,6 +1384,7 @@ class Arm:
                 continue
             # A faulted (not released) joint keeps receiving its frozen hold command.
             position, kp, kd = commands[i], j.kp, j.kd
+            tau = feedforward[i]
             sequence = motor.feedback_sequence
             try:
                 hold = self._hold.get(i)
@@ -1250,7 +1397,7 @@ class Arm:
                         self._busy_wait_us(gap * 1e6)
                 last_send = time.perf_counter()
                 sent_at = time.monotonic()
-                motor.send_command(self._to_motor(i, position), 0.0, kp, kd, feedforward[i])
+                motor.send_command(self._to_motor(i, position), 0.0, kp, kd, tau)
             except Exception as e:
                 if i not in self._faulted:
                     self._enter_fault(f"{j.label}: command failed ({e})", i)
@@ -1475,6 +1622,14 @@ class Arm:
     def _take_motion(self) -> int:
         """Start a new motion, superseding any in flight; returns its token."""
         with self._target_lock:
+            self._motion += 1
+            return self._motion
+
+    def _claim_motion(self) -> Optional[int]:
+        """_take_motion() if the arm takes targets now (ENABLED, not returning to rest), else None."""
+        with self._target_lock:
+            if self._state is not ArmState.ENABLED or self._returning:
+                return None
             self._motion += 1
             return self._motion
 

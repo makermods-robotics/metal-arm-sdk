@@ -451,6 +451,74 @@ def test_a_motion_superseded_after_planning_commits_no_row(urdf, monkeypatch):
         teardown(arm)
 
 
+def test_a_move_ee_that_pauses_in_setup_does_not_own_the_session_enabled_after_it(urdf, monkeypatch):
+    arm, _, _ = model_arm(urdf)
+    arm.enable()
+    try:
+        goal, _ = kinematics.pose_to_xyz_rpy(tool_chain(urdf).fk([0.8]))
+        setup = sdk.trajectory_ik.TrajectoryIK.from_config
+
+        def estop_and_enable_meanwhile(*a, **k):
+            arm.estop()
+            arm.enable()
+            return setup(*a, **k)
+        monkeypatch.setattr(sdk.trajectory_ik.TrajectoryIK, "from_config", estop_and_enable_meanwhile)
+        assert arm.move_ee(goal.tolist(), timeout=5.0) is False
+        held = arm.get_commanded_positions()
+        time.sleep(0.3)
+        with arm._target_lock:
+            assert arm._user_targets == pytest.approx(held, abs=1e-6)
+    finally:
+        teardown(arm)
+
+
+def test_a_cancelled_move_ee_never_overwrites_a_newer_command(urdf):
+    arm, _, _ = model_arm(urdf)
+    arm.enable()
+    try:
+        goal, _ = kinematics.pose_to_xyz_rpy(tool_chain(urdf).fk([1.2]))
+        cancel = threading.Event()
+        newer = [0.5, arm.get_commanded_positions()[1]]
+        read = arm.get_joint_positions
+        main = threading.current_thread()
+
+        def newer_command_meanwhile():
+            # the cancel path reads the pose to hold; a newer command lands just then
+            if cancel.is_set() and threading.current_thread() is main and not getattr(arm, "_sent_newer", False):
+                arm._sent_newer = True
+                arm.set_joint_targets(newer)
+            return read()
+        arm.get_joint_positions = newer_command_meanwhile
+        commit, rows = arm._set_targets, []
+
+        def cancel_while_streaming(targets, speed, token=None):
+            if token is not None:
+                rows.append(1)
+                if len(rows) == 5:
+                    cancel.set()
+            return commit(targets, speed, token)
+        arm._set_targets = cancel_while_streaming
+        assert arm.move_ee(goal.tolist(), speed=1.0, cancel=cancel) is False
+        assert getattr(arm, "_sent_newer", False)
+        with arm._target_lock:
+            assert arm._user_targets == pytest.approx(newer)
+    finally:
+        teardown(arm)
+
+
+def test_stop_does_not_release_a_weight_carrying_joint_left_out_of_the_return(urdf):
+    arm, _, fakes_ = model_arm(urdf, joints=[replace(j, return_to_rest=(i == 1))
+                                             for i, j in enumerate(model_joints())])
+    arm.enable()
+    try:
+        arm._synced = [True, True]
+        assert arm.move_to([0.8, arm.get_commanded_positions()[1]], timeout=3.0)   # the pendulum raised
+        assert arm.stop() is False
+        assert arm.state is ArmState.ENABLED and fakes_[1].enabled
+    finally:
+        teardown(arm)
+
+
 def test_move_ee_without_wait_streams_in_the_background(urdf):
     arm, _, _ = model_arm(urdf)
     arm.enable()
