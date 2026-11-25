@@ -104,6 +104,11 @@ newest state reply after one trailing flush, and re-sends the request on a miss.
 Metal motors apply MST_ID and ESC_ID writes immediately, so no power cycle is needed. The
 procedure also handles firmware that applies them only after one.
 
+`Arm.set_motor_id` (and `metal-arm set-id`) gives a joint's id in the profile only to a motor the profile does not
+have, and only when the caller names that joint: a new motor on id 9 replacing the gripper is
+`metal-arm set-id --arm left --from 9 --to 7 --replacing gripper`. A joint's own motor never takes another
+joint's id.
+
 ## Sources
 
 Damiao DM_CAN reference driver and motor manual (register map, 0x33/0x55/0xAA, 0xCC refresh,

@@ -11,7 +11,13 @@
 ## Stopping and faults
 
 - `stop()` (and every CLI command on exit) returns the joints to the pose they were enabled at, at
-  30 deg/s, and releases torque only once the return is verified. Otherwise the arm keeps holding
+  30 deg/s. With `rest_window_deg` set in the profile (the Metal profile leaves it off) and the arm enabled
+  that close to its rest pose (the profile's rest_pose, else zero, clipped into the limits), the joints that
+  carry its weight go a little further toward that pose instead: at most 3 deg and 1.75 N*m of proportional
+  effort, inside the limits. Once the return is verified, the control loop stops, each returned joint is read
+  once more, and torque goes off only if every reading is fresh and no joint moved away from rest. It is not
+  released when no joint returns to rest, or when a weight-carrying joint that does not return stands away from
+  rest. Otherwise (and on a second Ctrl-C) the arm keeps holding its pose at full gains
   and the CLI waits for you to type `RELEASE`; without a terminal, or after a second Ctrl-C, it
   exits leaving the arm holding (exit status 1, `"then": "holding"`) and says how to release it.
 - `enable()` refuses motors that already have torque on; `attach()` takes such an arm over where it

@@ -86,6 +86,9 @@ Every command takes `--json` and `--help`.
 These commands end with `--then rest` (return to where the arm started, then torque off; the usual
 default), `--then stay` (exit with torque on) or `--then release` (torque off where it is). If the
 return to rest cannot be confirmed, the arm keeps holding and the command exits with status 1.
+Torque goes off only after one more fresh reading shows the arm has not moved away from rest; otherwise it
+keeps holding at full gains. A profile may set `rest_window_deg` to press the weight-carrying joints lightly onto
+their support when the arm was enabled near rest; the Metal profile leaves it off (docs/safety.md).
 
 **Change the motors**
 
@@ -95,7 +98,7 @@ return to rest cannot be confirmed, the arm keeps holding and the command exits 
 | `release` | Torque off where the arm is: it drops unless it is at rest or supported. |
 | `clear-faults` | Clear motor faults once the cause is fixed. |
 | `zero` | Make the current pose the zero. Stored in the motors. |
-| `set-id` | Change a motor's CAN ID (`--from A --to B`). Saved in the motor. |
+| `set-id` | Change a motor's CAN ID, saved in the motor: `set-id --from 7 --to 8`, and back with `set-id --from 8 --to 7 --replacing gripper` (a joint's ID in the profile only goes to a motor named as that joint's replacement). |
 
 ## Python
 

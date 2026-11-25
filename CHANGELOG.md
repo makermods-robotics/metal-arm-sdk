@@ -32,7 +32,18 @@
   that drops is reopened. Header lines (8 KiB), header count (64) and frames (8 MiB) are bounded; closing a
   `url:` camera never waits on a server that sends slowly. `cameras list` shows the rig's `url:` cameras;
   `snapshot`, `stream` and `Rig.camera()` take them like USB ones.
-- `set-id` refuses to give a joint's motor the id of another joint in the profile, even when that joint is offline.
+- `set-id` gives a joint's id in the profile only to a motor the profile does not have, and only with `replacing`
+  (`--replacing JOINT`) naming that joint; a joint's own motor never takes another joint's id.
+- `stop()` releases torque only after the control loop has stopped and one more fresh reading of every returned
+  joint shows it has not moved away from rest; it holds instead when no joint returns to rest or a weight-carrying
+  joint that does not return stands away from rest, and every way out of `stop()` that does not release (a second
+  Ctrl-C included) leaves the arm holding at full gains with the control loop running. A profile may set
+  `rest_window_deg` to press the weight-carrying joints lightly onto their support when the arm was enabled near
+  rest (at most 3 deg and 1.75 N*m of proportional effort); the Metal profile leaves it unset.
+- `move_ee` claims its motion together with the admission check; a cancelled motion holds only while it still owns
+  the targets; a return to rest overtaken by an e-stop and a new enable writes nothing into the new session.
+- Planning: a helper that could not be started once is tried again on the next plan, and an in-process plan whose
+  last chunk crossed its limit is refused.
 - `gravity --check` gives the gravity model the chain's joints only, so it compares the measured holding torque
   with the model on an arm with a gripper.
 
