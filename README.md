@@ -141,6 +141,14 @@ elbow_flex, wrist_flex, wrist_yaw, wrist_roll, gripper`.
 Once enabled, the arm runs its own 100 Hz loop. It keeps targets inside the joint limits, limits
 speed, adds gravity compensation, and holds the pose if anything faults.
 
+The loop is a Python thread, so heavy Python work in your own threads (a policy, IK in a loop) slows it: it
+shares the interpreter lock with them. `arm.loop_rate_hz` is the measured rate; below 90 % of the profile's the
+SDK warns once, and each tick still moves by the time that really passed, so speed limits hold. On a big.LITTLE
+board the loop and the CAN receive thread move to the fast cores by themselves, and `move_ee` solves its path in a
+helper process. Planning is bounded: when the helper has not finished a few seconds after its expected solve time,
+when `timeout` runs out or when `cancel` is set, `move_ee` returns False at once, nothing sent and the arm holding
+its pose. Set `ARM_SDK_THREAD_TUNING=off` to leave thread placement and the GIL switch interval alone.
+
 ### Your own teleoperation loop
 
 ```python
@@ -202,6 +210,11 @@ than with numpy, so choose it for a long-running policy loop; `move_ee` and the 
 with Rig.load().camera("top") as cam:
     frame, stamp = cam.read()                   # BGR image, time in seconds
 ```
+
+A camera another program already serves over HTTP (a camera server, mjpg-streamer, an IP camera) is named by
+its URL: `metal-arm rig set-camera front url:http://127.0.0.1:8090/front/stream.mjpg`. A multipart MJPEG stream or
+a single-JPEG URL both work; only the newest frame is kept, frames are stamped when they arrive, and a stream that
+drops is reopened.
 
 Camera ids (`usb:<path>`) stay the same while a camera stays in the same USB port. On Windows cameras
 are not listed; name one by its index, `index:0`.
